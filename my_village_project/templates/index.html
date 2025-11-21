@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Procedural Village: Vast Horizon</title>
+    <title>High-Fidelity Village</title>
     <link
       rel="stylesheet"
       href="{{ url_for('static', filename='css/style.css') }}"
@@ -11,27 +11,38 @@
 
     <!-- Three.js Core -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <!-- OrbitControls -->
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-    <!-- Simplex Noise (지형 생성용) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/simplex-noise/2.4.0/simplex-noise.min.js"></script>
+
+    <!-- ✨ 포스트 프로세싱을 위한 필수 라이브러리들 ✨ -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/EffectComposer.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/RenderPass.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/LuminosityHighPassShader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/CopyShader.js"></script>
   </head>
   <body>
-    <!-- UI 레이어 -->
     <div id="ui-layer">
-      <h1>🏘️ VAST VILLAGE SIMULATOR</h1>
+      <h1
+        style="
+          font-family: 'Impact', sans-serif;
+          font-style: italic;
+          text-transform: uppercase;
+          color: #ffdd44;
+        "
+      >
+        ✨ High-Fidelity World
+      </h1>
       <div class="stats-box">
-        <p id="status">세계 생성 중...</p>
-        <p>Time: <span id="time-display">Day</span></p>
-        <button onclick="worldApp.toggleTime()">☀️/🌙 시간 변경</button>
-        <button onclick="worldApp.regenerate()">🔄 세계 재생성</button>
-      </div>
-      <div class="controls-hint">
-        우클릭 드래그: 이동 | 좌클릭 드래그: 회전 | 휠: 확대
+        <p id="status">고품질 렌더링 엔진 가동 중...</p>
+        <p>Time: <span id="time-val">12:00</span></p>
+        <div style="margin-top: 10px">
+          <button onclick="worldApp.toggleRotation()">자동 회전</button>
+          <button onclick="worldApp.regenerate()">🌍 월드 재생성</button>
+        </div>
       </div>
     </div>
-
-    <!-- 메인 스크립트 로드 -->
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
   </body>
 </html>
