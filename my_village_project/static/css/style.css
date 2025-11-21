@@ -1,0 +1,65 @@
+body {
+  margin: 0;
+  overflow: hidden;
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  background-color: #000;
+}
+
+#ui-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none; /* 3D 조작 방해 안 함 */
+}
+
+h1 {
+  position: absolute;
+  top: 20px;
+  left: 30px;
+  color: white;
+  font-size: 24px;
+  margin: 0;
+  text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+  letter-spacing: 2px;
+}
+
+.stats-box {
+  position: absolute;
+  top: 70px;
+  left: 30px;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 20px;
+  border-radius: 10px;
+  color: #ddd;
+  pointer-events: auto; /* 버튼 클릭 가능 */
+  backdrop-filter: blur(5px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+button {
+  background: #4466ff;
+  color: white;
+  border: none;
+  padding: 8px 15px;
+  margin-top: 5px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: background 0.3s;
+}
+
+button:hover {
+  background: #6688ff;
+}
+
+.controls-hint {
+  position: absolute;
+  bottom: 20px;
+  width: 100%;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 14px;
+  text-shadow: 1px 1px 2px black;
+}
