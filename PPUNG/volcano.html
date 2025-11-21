@@ -1,225 +1,365 @@
 <!DOCTYPE html>
 <html lang="ko">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>인터랙티브 3D 화산</title>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ULTIMATE VOLCANO 3D</title>
     <style>
-      body {
-        margin: 0;
-        overflow: hidden;
-        background-color: #111;
-        font-family: "Arial", sans-serif;
-      }
-      #info {
-        position: absolute;
-        top: 20px;
-        width: 100%;
-        text-align: center;
-        color: white;
-        pointer-events: none;
-        text-shadow: 1px 1px 2px black;
-        z-index: 10;
-      }
-      h1 {
-        margin: 0;
-        font-size: 24px;
-      }
-      p {
-        font-size: 14px;
-        color: #ccc;
-      }
+        body { margin: 0; overflow: hidden; background-color: #050505; font-family: 'Arial', sans-serif; }
+        #info { 
+            position: absolute; top: 20px; width: 100%; text-align: center; 
+            color: #ffaa00; pointer-events: none; 
+            text-shadow: 0 0 10px #ff4500; z-index: 10; 
+            letter-spacing: 2px;
+        }
+        h1 { margin: 0; font-size: 28px; font-weight: 800; }
+        p { font-size: 14px; color: #ccc; margin-top: 5px; }
+        .click-hint { color: white; font-weight: bold; animation: blink 1s infinite alternate; }
+        @keyframes blink { from { opacity: 1; } to { opacity: 0.5; } }
     </style>
-
-    <!-- 중요: ES Module 대신 일반 스크립트 태그로 라이브러리를 불러옵니다 (버전 r128) -->
+    
+    <!-- Three.js 라이브러리 로드 -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <!-- OrbitControls 불러오기 -->
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-  </head>
-  <body>
+</head>
+<body>
     <div id="info">
-      <h1>3D 화산 시뮬레이션</h1>
-      <p>
-        마우스 드래그: 회전 | 휠: 확대/축소 |
-        <strong>화면 클릭: 대폭발!</strong>
-      </p>
+        <h1>🔥 ULTIMATE VOLCANO 🔥</h1>
+        <p>마우스 드래그: 회전 | 휠: 줌 | <span class="click-hint">화면을 클릭하여 폭발시키세요!</span></p>
     </div>
 
     <script>
-      // 전역 변수 THREE를 사용합니다.
-
-      // 1. 씬(Scene) 설정
-      const scene = new THREE.Scene();
-      scene.background = new THREE.Color(0x111111);
-      scene.fog = new THREE.Fog(0x111111, 20, 100);
-
-      // 2. 카메라(Camera) 설정
-      const camera = new THREE.PerspectiveCamera(
-        60,
-        window.innerWidth / window.innerHeight,
-        0.1,
-        1000
-      );
-      camera.position.set(0, 20, 40);
-
-      // 3. 렌더러(Renderer) 설정
-      const renderer = new THREE.WebGLRenderer({ antialias: true });
-      renderer.setSize(window.innerWidth, window.innerHeight);
-      renderer.shadowMap.enabled = true;
-      document.body.appendChild(renderer.domElement);
-
-      // 4. 컨트롤(OrbitControls) 설정
-      // 일반 스크립트 방식에서는 THREE.OrbitControls로 접근합니다.
-      const controls = new THREE.OrbitControls(camera, renderer.domElement);
-      controls.enableDamping = true;
-      controls.dampingFactor = 0.05;
-
-      // 5. 조명(Lights) 설정
-      const ambientLight = new THREE.AmbientLight(0x404040, 1.5);
-      scene.add(ambientLight);
-
-      const moonLight = new THREE.DirectionalLight(0xffffff, 0.5);
-      moonLight.position.set(10, 20, 10);
-      moonLight.castShadow = true;
-      scene.add(moonLight);
-
-      const lavaLight = new THREE.PointLight(0xff4500, 5, 50);
-      lavaLight.position.set(0, 10, 0);
-      scene.add(lavaLight);
-
-      // 6. 화산 모델 만들기
-      const volcanoGroup = new THREE.Group();
-      const geometry = new THREE.CylinderGeometry(5, 25, 20, 12);
-
-      const positionAttribute = geometry.attributes.position;
-      for (let i = 0; i < positionAttribute.count; i++) {
-        const y = positionAttribute.getY(i);
-        if (y < 10) {
-          const x = positionAttribute.getX(i);
-          const z = positionAttribute.getZ(i);
-          positionAttribute.setX(i, x + (Math.random() - 0.5) * 2);
-          positionAttribute.setZ(i, z + (Math.random() - 0.5) * 2);
+        // --- 1. 유틸리티: 텍스처 생성기 (이미지 로딩 없이 빛나는 입자 만들기) ---
+        function createGlowTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 32;
+            canvas.height = 32;
+            const context = canvas.getContext('2d');
+            // 방사형 그라데이션으로 부드러운 원 그리기
+            const gradient = context.createRadialGradient(16, 16, 0, 16, 16, 16);
+            gradient.addColorStop(0, 'rgba(255, 255, 255, 1)'); // 중심은 흰색
+            gradient.addColorStop(0.4, 'rgba(255, 200, 100, 0.5)'); // 중간은 노랑
+            gradient.addColorStop(1, 'rgba(0, 0, 0, 0)'); // 끝은 투명
+            context.fillStyle = gradient;
+            context.fillRect(0, 0, 32, 32);
+            return new THREE.CanvasTexture(canvas);
         }
-      }
-      geometry.computeVertexNormals();
+        const particleTexture = createGlowTexture();
 
-      const material = new THREE.MeshStandardMaterial({
-        color: 0x5d4037,
-        flatShading: true,
-        roughness: 1,
-      });
+        // --- 2. 씬 설정 ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x050505); // 깊은 밤
+        scene.fog = new THREE.FogExp2(0x050505, 0.02); // 짙은 안개로 분위기 연출
 
-      const volcano = new THREE.Mesh(geometry, material);
-      volcano.position.y = 10;
-      volcano.castShadow = true;
-      volcano.receiveShadow = true;
-      volcanoGroup.add(volcano);
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 30, 60);
 
-      const groundGeo = new THREE.PlaneGeometry(200, 200);
-      const groundMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
-      const ground = new THREE.Mesh(groundGeo, groundMat);
-      ground.rotation.x = -Math.PI / 2;
-      ground.receiveShadow = true;
-      scene.add(ground);
-
-      scene.add(volcanoGroup);
-
-      // 7. 파티클 시스템
-      const particles = [];
-
-      class Particle {
-        constructor(isExplosion = false) {
-          const size = Math.random() * 0.5 + 0.2;
-          const geo = new THREE.DodecahedronGeometry(size, 0);
-          const color = new THREE.Color();
-          color.setHSL(Math.random() * 0.1 + 0.05, 1, 0.5);
-
-          const mat = new THREE.MeshBasicMaterial({ color: color });
-          this.mesh = new THREE.Mesh(geo, mat);
-
-          this.mesh.position.set(
-            (Math.random() - 0.5) * 4,
-            18,
-            (Math.random() - 0.5) * 4
-          );
-
-          const force = isExplosion ? 1.5 : 0.5;
-          this.velocity = new THREE.Vector3(
-            (Math.random() - 0.5) * 10 * force,
-            (Math.random() * 10 + 10) * force,
-            (Math.random() - 0.5) * 10 * force
-          );
-
-          this.gravity = 0.5;
-          this.life = 1.0;
-
-          scene.add(this.mesh);
-        }
-
-        update() {
-          this.mesh.position.add(
-            new THREE.Vector3(
-              this.velocity.x * 0.05,
-              this.velocity.y * 0.05,
-              this.velocity.z * 0.05
-            )
-          );
-          this.velocity.y -= this.gravity;
-          this.mesh.rotation.x += 0.1;
-          this.mesh.rotation.z += 0.1;
-
-          if (this.mesh.position.y < 0) {
-            this.life = 0;
-          }
-        }
-
-        dispose() {
-          scene.remove(this.mesh);
-          this.mesh.geometry.dispose();
-          this.mesh.material.dispose();
-        }
-      }
-
-      // 8. 애니메이션 루프
-      function animate() {
-        requestAnimationFrame(animate);
-
-        if (Math.random() > 0.8) {
-          particles.push(new Particle(false));
-        }
-
-        for (let i = particles.length - 1; i >= 0; i--) {
-          const p = particles[i];
-          p.update();
-          if (p.life <= 0) {
-            p.dispose();
-            particles.splice(i, 1);
-          }
-        }
-
-        lavaLight.intensity = 5 + Math.random() * 2;
-        controls.update();
-        renderer.render(scene, camera);
-      }
-
-      // 9. 이벤트 리스너
-      window.addEventListener("resize", () => {
-        camera.aspect = window.innerWidth / window.innerHeight;
-        camera.updateProjectionMatrix();
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
-      });
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // 고해상도 대응
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
 
-      window.addEventListener("pointerdown", () => {
-        for (let i = 0; i < 60; i++) {
-          particles.push(new Particle(true));
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.autoRotate = true; // 자동 회전 추가
+        controls.autoRotateSpeed = 0.5;
+
+        // --- 3. 배경 (별) 만들기 ---
+        const starGeo = new THREE.BufferGeometry();
+        const starCount = 2000;
+        const starPos = new Float32Array(starCount * 3);
+        for(let i=0; i<starCount*3; i++) {
+            starPos[i] = (Math.random() - 0.5) * 300; // 넓게 퍼뜨리기
         }
-        camera.position.y += 0.5;
-        setTimeout(() => {
-          camera.position.y -= 0.5;
-        }, 50);
-      });
+        starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+        const starMat = new THREE.PointsMaterial({ color: 0xffffff, size: 0.5, transparent: true, opacity: 0.8 });
+        const stars = new THREE.Points(starGeo, starMat);
+        scene.add(stars);
 
-      animate();
+        // --- 4. 조명 ---
+        const ambientLight = new THREE.AmbientLight(0x111111);
+        scene.add(ambientLight);
+
+        // 달빛
+        const moonLight = new THREE.DirectionalLight(0xaaccff, 0.5);
+        moonLight.position.set(50, 100, 50);
+        moonLight.castShadow = true;
+        scene.add(moonLight);
+
+        // 화산 내부의 강렬한 빛 (깜빡임 효과용)
+        const volcanoLight = new THREE.PointLight(0xff3300, 1, 100);
+        volcanoLight.position.set(0, 15, 0);
+        scene.add(volcanoLight);
+
+        // --- 5. 화산 모델 (Vertex Colors 적용) ---
+        const volcanoGroup = new THREE.Group();
+        
+        // 산 형태
+        const geometry = new THREE.CylinderGeometry(6, 35, 25, 32, 10); // 세그먼트 늘려서 부드럽게
+        const pos = geometry.attributes.position;
+        const colors = [];
+        const colorTop = new THREE.Color(0xff2200); // 분화구: 붉은색
+        const colorBottom = new THREE.Color(0x1a1a1a); // 바닥: 검은색
+
+        for (let i = 0; i < pos.count; i++) {
+            const x = pos.getX(i);
+            const y = pos.getY(i);
+            const z = pos.getZ(i);
+            
+            // 노이즈를 추가하여 울퉁불퉁하게
+            const noise = Math.random() * 1.5;
+            const radiusEffect = 1 - (y + 12.5) / 25; // 아래로 갈수록 퍼짐
+            
+            if (y < 10) { // 바닥 부분 변형
+                pos.setX(i, x + (Math.random()-0.5)*2 + x * 0.1 * noise);
+                pos.setZ(i, z + (Math.random()-0.5)*2 + z * 0.1 * noise);
+            }
+
+            // 높이에 따른 색상 입히기 (Vertex Color)
+            const mixFactor = (y + 12.5) / 25; // 0(바닥) ~ 1(꼭대기)
+            const mixedColor = colorBottom.clone().lerp(colorTop, Math.pow(mixFactor, 3)); // 위쪽만 붉게
+            colors.push(mixedColor.r, mixedColor.g, mixedColor.b);
+        }
+        geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+        geometry.computeVertexNormals();
+
+        const material = new THREE.MeshStandardMaterial({
+            vertexColors: true, // 정점 색상 사용
+            roughness: 0.8,
+            flatShading: true
+        });
+
+        const volcano = new THREE.Mesh(geometry, material);
+        volcano.position.y = 12.5;
+        volcano.castShadow = true;
+        volcano.receiveShadow = true;
+        volcanoGroup.add(volcano);
+
+        // 지면
+        const ground = new THREE.Mesh(
+            new THREE.PlaneGeometry(300, 300),
+            new THREE.MeshStandardMaterial({ color: 0x151515, roughness: 1 })
+        );
+        ground.rotation.x = -Math.PI / 2;
+        ground.receiveShadow = true;
+        scene.add(ground);
+
+        scene.add(volcanoGroup);
+
+        // --- 6. 파티클 시스템 클래스 ---
+        const particles = [];
+        const shockwaves = [];
+
+        class Particle {
+            constructor(type) {
+                this.type = type; // 'lava', 'smoke', 'spark'
+                
+                // Three.js Sprite를 사용하여 항상 카메라를 바라보는 2D 이미지 효과
+                const mat = new THREE.SpriteMaterial({
+                    map: particleTexture,
+                    color: type === 'smoke' ? 0x555555 : (type === 'spark' ? 0xffff00 : 0xff4400),
+                    transparent: true,
+                    opacity: type === 'smoke' ? 0.4 : 1,
+                    blending: THREE.AdditiveBlending // 빛이 겹치면 더 밝아짐 (핵심!)
+                });
+                
+                this.mesh = new THREE.Sprite(mat);
+                
+                // 초기 위치 (분화구)
+                const angle = Math.random() * Math.PI * 2;
+                const radius = Math.random() * 4;
+                this.mesh.position.set(
+                    Math.cos(angle) * radius,
+                    24, // 분화구 높이
+                    Math.sin(angle) * radius
+                );
+
+                const sizeBase = type === 'smoke' ? 5 : (type === 'lava' ? 2 : 0.5);
+                this.mesh.scale.set(sizeBase, sizeBase, 1);
+
+                // 속도 설정
+                const explosionPower = Math.random();
+                if (type === 'lava') {
+                    this.velocity = new THREE.Vector3(
+                        (Math.random() - 0.5) * 15,
+                        Math.random() * 30 + 20, // 높이 솟구침
+                        (Math.random() - 0.5) * 15
+                    );
+                    this.gravity = 0.8;
+                    this.drag = 0.96;
+                } else if (type === 'smoke') {
+                    this.velocity = new THREE.Vector3(
+                        (Math.random() - 0.5) * 10,
+                        Math.random() * 10 + 5, 
+                        (Math.random() - 0.5) * 10
+                    );
+                    this.gravity = -0.05; // 연기는 위로 뜸
+                    this.drag = 0.98;
+                } else { // Spark
+                    this.velocity = new THREE.Vector3(
+                        (Math.random() - 0.5) * 40,
+                        Math.random() * 40 + 10,
+                        (Math.random() - 0.5) * 40
+                    );
+                    this.gravity = 0.5;
+                    this.drag = 0.92;
+                }
+
+                scene.add(this.mesh);
+                this.life = 1.0;
+            }
+
+            update() {
+                this.life -= 0.01;
+                
+                // 물리 업데이트
+                this.mesh.position.add(this.velocity.clone().multiplyScalar(0.016)); // Delta time approx
+                this.velocity.y -= this.gravity;
+                this.velocity.multiplyScalar(this.drag);
+
+                // 타입별 특수 효과
+                if (this.type === 'smoke') {
+                    this.mesh.scale.multiplyScalar(1.01); // 연기는 점점 커짐
+                    this.mesh.material.opacity = this.life * 0.4;
+                } else if (this.type === 'lava') {
+                    this.mesh.scale.multiplyScalar(0.98); // 용암은 식으면서 작아짐
+                    // 색상 변화 (노랑 -> 빨강 -> 검정)
+                    const color = new THREE.Color();
+                    color.setHSL(0.1 - (1 - this.life) * 0.1, 1, 0.5); 
+                    this.mesh.material.color = color;
+                }
+
+                // 바닥 충돌
+                if (this.mesh.position.y < 0) {
+                    this.mesh.position.y = 0;
+                    this.velocity.y *= -0.5; // 튕김
+                    this.velocity.x *= 0.8;
+                    this.velocity.z *= 0.8;
+                    
+                    if (this.type === 'lava' && Math.abs(this.velocity.y) < 1) {
+                        this.life -= 0.05; // 바닥에 멈추면 빨리 사라짐
+                    }
+                }
+            }
+
+            dispose() {
+                scene.remove(this.mesh);
+                this.mesh.material.dispose();
+            }
+        }
+
+        // 충격파 링 클래스
+        class Shockwave {
+            constructor() {
+                const geometry = new THREE.RingGeometry(1, 2, 32);
+                const material = new THREE.MeshBasicMaterial({ 
+                    color: 0xffaa00, 
+                    transparent: true, 
+                    opacity: 0.8,
+                    side: THREE.DoubleSide,
+                    blending: THREE.AdditiveBlending
+                });
+                this.mesh = new THREE.Mesh(geometry, material);
+                this.mesh.rotation.x = -Math.PI / 2;
+                this.mesh.position.y = 25; // 분화구 위치
+                scene.add(this.mesh);
+                this.scale = 1;
+            }
+            update() {
+                this.scale += 1.5;
+                this.mesh.scale.set(this.scale, this.scale, 1);
+                this.mesh.material.opacity -= 0.03;
+            }
+            isDead() { return this.mesh.material.opacity <= 0; }
+            dispose() {
+                scene.remove(this.mesh);
+                this.mesh.geometry.dispose();
+                this.mesh.material.dispose();
+            }
+        }
+
+        // --- 7. 메인 루프 및 인터랙션 ---
+        let shakeIntensity = 0;
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            // 1) 조명 깜빡임 (화산 숨쉬기)
+            const time = Date.now() * 0.005;
+            volcanoLight.intensity = 2 + Math.sin(time) * 1 + Math.random();
+            volcanoLight.color.setHSL(0.05 + Math.sin(time)*0.02, 1, 0.5);
+
+            // 2) 자동 파티클 (평상시 연기)
+            if (Math.random() < 0.3) particles.push(new Particle('smoke'));
+            if (Math.random() < 0.05) particles.push(new Particle('lava'));
+
+            // 3) 파티클 업데이트
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const p = particles[i];
+                p.update();
+                if (p.life <= 0) {
+                    p.dispose();
+                    particles.splice(i, 1);
+                }
+            }
+
+            // 4) 충격파 업데이트
+            for (let i = shockwaves.length - 1; i >= 0; i--) {
+                const s = shockwaves[i];
+                s.update();
+                if (s.isDead()) {
+                    s.dispose();
+                    shockwaves.splice(i, 1);
+                }
+            }
+
+            // 5) 카메라 쉐이크 효과
+            if (shakeIntensity > 0) {
+                const rx = (Math.random() - 0.5) * shakeIntensity;
+                const ry = (Math.random() - 0.5) * shakeIntensity;
+                const rz = (Math.random() - 0.5) * shakeIntensity;
+                camera.position.add(new THREE.Vector3(rx, ry, rz));
+                shakeIntensity *= 0.9; // 감쇠
+            }
+
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        // 이벤트: 화면 리사이즈
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // 이벤트: 폭발 클릭
+        function explode() {
+            // 카메라 흔들림
+            shakeIntensity = 2.0;
+            
+            // 충격파 생성
+            shockwaves.push(new Shockwave());
+
+            // 대량 파티클 생성
+            for(let i=0; i<50; i++) particles.push(new Particle('lava'));
+            for(let i=0; i<30; i++) particles.push(new Particle('smoke'));
+            for(let i=0; i<40; i++) particles.push(new Particle('spark'));
+
+            // 플래시 효과 (배경이 잠시 밝아짐)
+            scene.background = new THREE.Color(0x331100);
+            setTimeout(() => { scene.background = new THREE.Color(0x050505); }, 100);
+        }
+
+        window.addEventListener('pointerdown', explode);
+        
+        // 스페이스바 눌러도 폭발
+        window.addEventListener('keydown', (e) => {
+            if(e.code === 'Space') explode();
+        });
+
+        animate();
     </script>
-  </body>
+</body>
 </html>
