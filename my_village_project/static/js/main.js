@@ -1,434 +1,516 @@
 /**
- * ==========================================
- *  VAST VILLAGE ENGINE (Procedural Generation)
- * ==========================================
+ * ============================================================
+ *  HIGH-FIDELITY VILLAGE ENGINE
+ *  Features: Custom Shaders, Unreal Bloom, Dynamic Sky, Particles
+ * ============================================================
  */
 
-class VillageWorld {
+// --- GLSL 쉐이더 코드 (물 효과) ---
+const WATER_VERTEX_SHADER = `
+    uniform float uTime;
+    varying float vElevation;
+    varying vec2 vUv;
+
+    // 간단한 노이즈 함수
+    float random(vec2 st) { return fract(sin(dot(st.xy, vec2(12.9898,78.233))) * 43758.5453123); }
+    
+    void main() {
+        vUv = uv;
+        vec4 modelPosition = modelMatrix * vec4(position, 1.0);
+
+        // 물결 파동 계산 (여러 사인파 합성)
+        float elevation = sin(modelPosition.x * 0.1 + uTime) * 0.4;
+        elevation += sin(modelPosition.z * 0.08 + uTime * 0.8) * 0.4;
+        elevation -= abs(sin(modelPosition.x * 0.3 - uTime * 0.5) * 0.2); // 뾰족한 부분
+
+        modelPosition.y += elevation;
+        vElevation = elevation;
+
+        vec4 viewPosition = viewMatrix * modelPosition;
+        vec4 projectedPosition = projectionMatrix * viewPosition;
+        gl_Position = projectedPosition;
+    }
+`;
+
+const WATER_FRAGMENT_SHADER = `
+    uniform float uTime;
+    uniform vec3 uDepthColor;
+    uniform vec3 uSurfaceColor;
+    varying float vElevation;
+    varying vec2 vUv;
+
+    void main() {
+        // 높이에 따른 색상 믹스 (깊은 곳 vs 파도 끝)
+        float mixStrength = (vElevation + 0.5) * 1.2;
+        vec3 color = mix(uDepthColor, uSurfaceColor, mixStrength);
+        
+        // 반짝이는 하이라이트 (Foam)
+        if(vElevation > 0.5) {
+            color = mix(color, vec3(1.0), 0.5); 
+        }
+
+        gl_FragColor = vec4(color, 0.85); // 약간 투명하게
+    }
+`;
+
+class UltraWorld {
   constructor() {
-    this.config = null;
+    this.config = {
+      worldSize: 500,
+      houseCount: 300,
+      treeCount: 1200,
+    };
+
     this.scene = null;
     this.camera = null;
     this.renderer = null;
+    this.composer = null; // 포스트 프로세싱
     this.controls = null;
     this.simplex = new SimplexNoise();
+    this.clock = new THREE.Clock();
 
-    this.objects = {
-      houses: null,
-      trees: null,
-      clouds: null,
-      water: null,
-      ground: null,
+    // 애니메이션 관련
+    this.uniforms = {
+      uTime: { value: 0 },
     };
+    this.dayTime = 0;
+    this.autoRotate = false;
 
-    this.lights = {
-      sun: null,
-      ambient: null,
-      hemi: null,
-    };
-
-    this.isNight = false;
-    this.time = 0;
-
-    // 텍스처 생성 (이미지 파일 없이 코드로 텍스처를 만듭니다)
-    this.textures = {
-      roof: this.createTexture("roof"),
-      wall: this.createTexture("wall"),
-      grass: this.createTexture("grass"),
-    };
+    this.objects = {};
+    this.particles = [];
 
     this.init();
   }
 
-  async init() {
-    // 1. 서버에서 설정 가져오기
-    try {
-      const res = await fetch("/api/world-config");
-      this.config = await res.json();
-    } catch (e) {
-      console.warn("서버 연결 실패, 기본값 사용");
-      this.config = {
-        seed: 123,
-        worldSize: 600,
-        houseCount: 400,
-        treeCount: 1500,
-      };
-    }
-
-    // 2. Three.js 기본 셋업
+  init() {
+    // 1. 씬 & 카메라
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x88ccff);
-    this.scene.fog = new THREE.Fog(0x88ccff, 50, 400); // 깊이감 추가
+    this.scene.background = new THREE.Color(0x222233);
+    this.scene.fog = new THREE.FogExp2(0x222233, 0.0025);
 
     this.camera = new THREE.PerspectiveCamera(
-      60,
+      55,
       window.innerWidth / window.innerHeight,
       1,
-      1000
+      2000
     );
-    this.camera.position.set(100, 100, 100);
+    this.camera.position.set(120, 80, 120);
 
-    this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    // 2. 렌더러 (고화질 설정)
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      powerPreference: "high-performance",
+    });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // 레티나 디스플레이 지원
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap; // 부드러운 그림자
+    this.renderer.outputEncoding = THREE.sRGBEncoding; // 색상 보정
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping; // 영화 같은 톤 매핑
+    this.renderer.toneMappingExposure = 1.0;
     document.body.appendChild(this.renderer.domElement);
 
+    // 3. 컨트롤
     this.controls = new THREE.OrbitControls(
       this.camera,
       this.renderer.domElement
     );
-    this.controls.maxPolarAngle = Math.PI / 2 - 0.05; // 땅 밑으로 못 가게
     this.controls.enableDamping = true;
+    this.controls.maxPolarAngle = Math.PI / 2 - 0.05;
 
-    // 3. 조명 설정
+    // 4. 조명 시스템 (태양)
     this.setupLights();
 
-    // 4. 월드 생성
+    // 5. 포스트 프로세싱 (블룸 효과) 설정 - 여기가 핵심!
+    this.setupPostProcessing();
+
+    // 6. 월드 생성
     this.generateWorld();
 
-    // 5. 이벤트 리스너
+    // 7. 이벤트 & 루프
     window.addEventListener("resize", () => this.onResize());
-
-    // 6. 렌더링 시작
     this.update();
 
-    document.getElementById("status").innerText = "세계 탐험 준비 완료";
+    document.getElementById("status").innerText = "✨ 렌더링 준비 완료";
   }
 
   setupLights() {
-    this.lights.ambient = new THREE.AmbientLight(0xffffff, 0.4);
-    this.scene.add(this.lights.ambient);
+    this.ambientLight = new THREE.AmbientLight(0xb9d5ff, 0.3);
+    this.scene.add(this.ambientLight);
 
-    this.lights.hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 0.4);
-    this.scene.add(this.lights.hemi);
+    this.sunLight = new THREE.DirectionalLight(0xffaa33, 1.5);
+    this.sunLight.position.set(100, 50, 100);
+    this.sunLight.castShadow = true;
 
-    this.lights.sun = new THREE.DirectionalLight(0xffffff, 1.2);
-    this.lights.sun.position.set(100, 200, 100);
-    this.lights.sun.castShadow = true;
-
-    // 그림자 품질 설정 (넓은 맵을 커버하기 위해)
-    this.lights.sun.shadow.mapSize.width = 2048;
-    this.lights.sun.shadow.mapSize.height = 2048;
+    // 그림자 해상도 대폭 증가
+    this.sunLight.shadow.mapSize.width = 4096;
+    this.sunLight.shadow.mapSize.height = 4096;
+    this.sunLight.shadow.camera.near = 0.5;
+    this.sunLight.shadow.camera.far = 600;
     const d = 300;
-    this.lights.sun.shadow.camera.left = -d;
-    this.lights.sun.shadow.camera.right = d;
-    this.lights.sun.shadow.camera.top = d;
-    this.lights.sun.shadow.camera.bottom = -d;
+    this.sunLight.shadow.camera.left = -d;
+    this.sunLight.shadow.camera.right = d;
+    this.sunLight.shadow.camera.top = d;
+    this.sunLight.shadow.camera.bottom = -d;
+    this.sunLight.shadow.bias = -0.0005; // 그림자 줄무늬 제거
 
-    this.scene.add(this.lights.sun);
+    this.scene.add(this.sunLight);
   }
 
-  // --- 텍스처 생성 유틸리티 ---
-  createTexture(type) {
-    const canvas = document.createElement("canvas");
-    canvas.width = 64;
-    canvas.height = 64;
-    const ctx = canvas.getContext("2d");
+  setupPostProcessing() {
+    // 렌더 패스
+    const renderScene = new THREE.RenderPass(this.scene, this.camera);
 
-    if (type === "roof") {
-      ctx.fillStyle = "#8a4b32";
-      ctx.fillRect(0, 0, 64, 64);
-      ctx.fillStyle = "#6e3b28";
-      for (let i = 0; i < 10; i++) ctx.fillRect(Math.random() * 64, 0, 4, 64); // 기와 느낌
-    } else if (type === "wall") {
-      ctx.fillStyle = "#e0d6c5";
-      ctx.fillRect(0, 0, 64, 64);
-      ctx.fillStyle = "#d1c4b0";
-      for (let i = 0; i < 20; i++)
-        ctx.fillRect(Math.random() * 64, Math.random() * 64, 2, 2); // 노이즈
-    } else {
-      // grass
-      ctx.fillStyle = "#4caf50";
-      ctx.fillRect(0, 0, 64, 64);
-      ctx.fillStyle = "#388e3c";
-      for (let i = 0; i < 40; i++)
-        ctx.fillRect(Math.random() * 64, Math.random() * 64, 2, 2);
-    }
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.wrapS = THREE.RepeatWrapping;
-    tex.wrapT = THREE.RepeatWrapping;
-    return tex;
+    // 블룸 패스 (빛 번짐 효과)
+    const bloomPass = new THREE.UnrealBloomPass(
+      new THREE.Vector2(window.innerWidth, window.innerHeight),
+      1.5,
+      0.4,
+      0.85
+    );
+    bloomPass.threshold = 0.2; // 이 밝기 이상만 번짐
+    bloomPass.strength = 0.4; // 번짐 강도 (너무 세면 눈부심)
+    bloomPass.radius = 0.5;
+
+    this.composer = new THREE.EffectComposer(this.renderer);
+    this.composer.addPass(renderScene);
+    this.composer.addPass(bloomPass);
   }
 
-  // --- 지형 및 객체 생성 (핵심 로직) ---
+  // --- 월드 생성 로직 ---
   generateWorld() {
-    // 기존 객체 삭제
-    if (this.objects.ground) this.scene.remove(this.objects.ground);
-    if (this.objects.water) this.scene.remove(this.objects.water);
-    if (this.objects.houses) this.scene.remove(this.objects.houses);
-    if (this.objects.trees) this.scene.remove(this.objects.trees);
+    // 초기화
+    if (this.objects.group) this.scene.remove(this.objects.group);
+    this.objects.group = new THREE.Group();
+    this.scene.add(this.objects.group);
+    this.particles = [];
 
-    const worldSize = this.config.worldSize;
-    const halfSize = worldSize / 2;
+    // 1. 고급 지형 (Terrain)
+    this.createTerrain();
 
-    // 1. 지형 (Terrain) 생성
-    // Vertex 색상 방식을 사용하여 텍스처 로딩 없이 자연스러운 지형 연출
-    const geometry = new THREE.PlaneGeometry(worldSize, worldSize, 150, 150);
-    geometry.rotateX(-Math.PI / 2);
+    // 2. 쉐이더 바다 (Water)
+    this.createWater();
 
-    const pos = geometry.attributes.position;
+    // 3. 식생 및 건축물
+    this.populateWorld();
+
+    // 4. 파티클 (연기)
+    this.createSmokeParticles();
+  }
+
+  createTerrain() {
+    const geo = new THREE.PlaneGeometry(
+      this.config.worldSize,
+      this.config.worldSize,
+      200,
+      200
+    );
+    geo.rotateX(-Math.PI / 2);
+
+    const pos = geo.attributes.position;
     const colors = [];
-    const colorGrass = new THREE.Color(0x55aa55);
-    const colorSand = new THREE.Color(0xeebb88);
-    const colorRock = new THREE.Color(0x666666);
-    const colorSnow = new THREE.Color(0xffffff);
+    const cSand = new THREE.Color(0xe8dcb5);
+    const cGrass = new THREE.Color(0x599c4f);
+    const cRock = new THREE.Color(0x555555);
+    const cSnow = new THREE.Color(0xffffff);
 
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i);
       const z = pos.getZ(i);
 
-      // 노이즈로 높이 계산 (여러 레이어 합성)
-      let y = this.getElevation(x, z);
+      // 다층 노이즈 (FBM)
+      let y = this.simplex.noise2D(x * 0.004, z * 0.004) * 40;
+      y += this.simplex.noise2D(x * 0.01, z * 0.01) * 10;
+      y += this.simplex.noise2D(x * 0.03, z * 0.03) * 2;
+
+      // 섬 형태로 만들기 (가장자리 낮춤)
+      const dist = Math.sqrt(x * x + z * z);
+      const falloff = Math.max(
+        0,
+        1 - Math.pow(dist / (this.config.worldSize * 0.45), 3)
+      );
+      y *= falloff;
+      y -= 5; // 해수면 조정
+
       pos.setY(i, y);
 
-      // 높이에 따른 색상 (Splatting)
+      // 색상 블렌딩 (Vertex Color)
       let color = new THREE.Color();
-      if (y < 3) color = colorSand; // 해변
-      else if (y < 30) color = colorGrass; // 평지
-      else if (y < 60) color = colorRock; // 산
-      else color = colorSnow; // 설산
+      if (y < 2) color = cSand;
+      else if (y < 35) color.copy(cGrass).lerp(cRock, (y - 2) / 33);
+      else if (y < 50) color = cRock;
+      else color = cSnow;
 
-      // 약간의 랜덤성 추가
-      color.offsetHSL(0, 0, (Math.random() - 0.5) * 0.05);
+      // 색상 노이즈 추가 (단조로움 방지)
+      color.offsetHSL(0, 0, (Math.random() - 0.5) * 0.03);
       colors.push(color.r, color.g, color.b);
     }
 
-    geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
-    geometry.computeVertexNormals();
+    geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+    geo.computeVertexNormals();
 
-    const groundMat = new THREE.MeshStandardMaterial({
+    const mat = new THREE.MeshStandardMaterial({
       vertexColors: true,
       roughness: 0.8,
       flatShading: true,
     });
-    this.objects.ground = new THREE.Mesh(geometry, groundMat);
-    this.objects.ground.receiveShadow = true;
-    this.scene.add(this.objects.ground);
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.receiveShadow = true;
+    mesh.castShadow = true;
+    this.objects.group.add(mesh);
 
-    // 2. 물 (Water) 생성
-    const waterGeo = new THREE.PlaneGeometry(worldSize, worldSize);
-    waterGeo.rotateX(-Math.PI / 2);
-    const waterMat = new THREE.MeshStandardMaterial({
-      color: 0x22aaff,
+    this.terrainGeo = geo; // 나중에 높이 계산용 저장
+  }
+
+  createWater() {
+    const geo = new THREE.PlaneGeometry(
+      this.config.worldSize,
+      this.config.worldSize,
+      64,
+      64
+    );
+    geo.rotateX(-Math.PI / 2);
+
+    // 커스텀 쉐이더 매터리얼
+    const mat = new THREE.ShaderMaterial({
+      vertexShader: WATER_VERTEX_SHADER,
+      fragmentShader: WATER_FRAGMENT_SHADER,
+      uniforms: {
+        uTime: this.uniforms.uTime,
+        uDepthColor: { value: new THREE.Color(0x186691) },
+        uSurfaceColor: { value: new THREE.Color(0x9bd8ff) },
+      },
       transparent: true,
-      opacity: 0.6,
-      roughness: 0.1,
-      metalness: 0.5,
+      side: THREE.DoubleSide,
     });
-    this.objects.water = new THREE.Mesh(waterGeo, waterMat);
-    this.objects.water.position.y = 2.5; // 해수면 높이
-    this.scene.add(this.objects.water);
 
-    // 3. 인스턴싱을 이용한 대량의 나무와 집 생성 (최적화 필수)
-    this.generateVegetation(pos);
-    this.generateHouses(pos);
-    this.generateClouds();
+    const water = new THREE.Mesh(geo, mat);
+    water.position.y = 1.5;
+    this.objects.group.add(water);
   }
 
-  getElevation(x, z) {
-    // 노이즈 함수 조합
-    const zoom = 0.005;
-    const base = this.simplex.noise2D(x * zoom, z * zoom) * 30;
-    const detail = this.simplex.noise2D(x * zoom * 4, z * zoom * 4) * 5;
-    // 중앙 근처를 평평하게 만들기 (마을 부지)
-    const dist = Math.sqrt(x * x + z * z);
-    const flatten = Math.max(0, 1 - dist / 150);
+  populateWorld() {
+    // --- 나무 (더 예쁜 모양: Dodecahedron Leaves) ---
+    const treeCount = this.config.treeCount;
 
-    return Math.max(-10, base + detail) * (1 - flatten * 0.5);
-  }
-
-  generateVegetation(terrainPos) {
-    const count = this.config.treeCount;
-
-    // 단순한 나무 모델 생성 (Cylinder + Cone)
-    // 인스턴싱을 위해 Geometry 병합
-    const trunkGeo = new THREE.CylinderGeometry(0.5, 1, 3, 5);
-    trunkGeo.translate(0, 1.5, 0);
-    const leavesGeo = new THREE.ConeGeometry(2.5, 6, 5);
-    leavesGeo.translate(0, 5.5, 0);
-
-    // BufferGeometryUtils가 없으므로 직접 하나의 Mesh로 합치지 않고
-    // 두 개의 InstancedMesh를 사용하거나 그룹핑.. 여기선 간단히 잎사귀만 표현하거나
-    // Cone 하나로 'Low Poly 나무'를 표현하겠습니다. (성능 고려)
-
-    const treeGeo = new THREE.ConeGeometry(2, 8, 6);
-    treeGeo.translate(0, 4, 0); // 바닥이 0점에 오도록
-    const treeMat = new THREE.MeshStandardMaterial({
-      color: 0x2d6e32,
+    // 나무 모델링 (InstancedMesh를 위한 Group 대체) -> BufferGeometry 병합 필요하지만
+    // 여기서는 간단히 InstancedMesh 2개(기둥, 잎) 사용
+    const trunkGeo = new THREE.CylinderGeometry(0.3, 0.5, 2, 5);
+    trunkGeo.translate(0, 1, 0);
+    const trunkMat = new THREE.MeshStandardMaterial({
+      color: 0x5c4033,
       flatShading: true,
     });
 
-    this.objects.trees = new THREE.InstancedMesh(treeGeo, treeMat, count);
-    this.objects.trees.castShadow = true;
-    this.objects.trees.receiveShadow = true;
-
-    const dummy = new THREE.Object3D();
-    let instanceIndex = 0;
-
-    for (let i = 0; i < count * 3; i++) {
-      // 시도 횟수 늘림
-      if (instanceIndex >= count) break;
-
-      const x = (Math.random() - 0.5) * this.config.worldSize;
-      const z = (Math.random() - 0.5) * this.config.worldSize;
-      const y = this.getElevation(x, z);
-
-      // 조건: 물 위나 너무 높은 산에는 나무 X
-      if (y > 3.5 && y < 40) {
-        dummy.position.set(x, y, z);
-
-        // 크기 랜덤
-        const scale = 0.5 + Math.random() * 1.0;
-        dummy.scale.set(scale, scale, scale);
-        dummy.rotation.y = Math.random() * Math.PI;
-
-        dummy.updateMatrix();
-        this.objects.trees.setMatrixAt(instanceIndex++, dummy.matrix);
-      }
-    }
-    this.scene.add(this.objects.trees);
-  }
-
-  generateHouses(terrainPos) {
-    const count = this.config.houseCount;
-
-    // 집: Box(몸통) + Cone(지붕) 합체 형태 (InstancedMesh는 단일 재질이어야 해서 색상은 하나로 통일하거나 쉐이더 써야함)
-    // 여기서는 간단하게 Box와 Cone을 각각 InstancedMesh로 만듭니다.
-
-    const bodyGeo = new THREE.BoxGeometry(4, 4, 4);
-    bodyGeo.translate(0, 2, 0);
-    const bodyMat = new THREE.MeshStandardMaterial({ map: this.textures.wall }); // 벽 텍스처
-
-    const roofGeo = new THREE.ConeGeometry(3.5, 3, 4);
-    roofGeo.translate(0, 5.5, 0);
-    roofGeo.rotateY(Math.PI / 4);
-    const roofMat = new THREE.MeshStandardMaterial({ map: this.textures.roof }); // 지붕 텍스처
-
-    const housesBody = new THREE.InstancedMesh(bodyGeo, bodyMat, count);
-    const housesRoof = new THREE.InstancedMesh(roofGeo, roofMat, count);
-
-    housesBody.castShadow = true;
-    housesBody.receiveShadow = true;
-    housesRoof.castShadow = true;
-    housesRoof.receiveShadow = true;
-
-    const dummy = new THREE.Object3D();
-    let instanceIndex = 0;
-
-    // 마을 중심 생성 (랜덤한 몇 개의 클러스터)
-    const clusters = [];
-    for (let k = 0; k < 5; k++) {
-      clusters.push({
-        x: (Math.random() - 0.5) * this.config.worldSize * 0.6,
-        z: (Math.random() - 0.5) * this.config.worldSize * 0.6,
-      });
-    }
-
-    for (let i = 0; i < count * 5; i++) {
-      if (instanceIndex >= count) break;
-
-      // 클러스터 기반 위치 선정 (마을 형성)
-      const cluster = clusters[Math.floor(Math.random() * clusters.length)];
-      const offsetX = (Math.random() - 0.5) * 100;
-      const offsetZ = (Math.random() - 0.5) * 100;
-
-      const x = cluster.x + offsetX;
-      const z = cluster.z + offsetZ;
-      const y = this.getElevation(x, z);
-
-      // 조건: 평지이고 물 위가 아닐 것
-      // 경사도 체크(간단히 주변 높이 비교)는 생략하고 높이 범위로만 제한
-      if (y > 4 && y < 20) {
-        dummy.position.set(x, y, z);
-        dummy.rotation.y = Math.random() * Math.PI * 2;
-        const s = 0.8 + Math.random() * 0.5;
-        dummy.scale.set(s, s, s);
-
-        dummy.updateMatrix();
-        housesBody.setMatrixAt(instanceIndex, dummy.matrix);
-        housesRoof.setMatrixAt(instanceIndex, dummy.matrix);
-        instanceIndex++;
-      }
-    }
-
-    this.objects.houses = new THREE.Group();
-    this.objects.houses.add(housesBody);
-    this.objects.houses.add(housesRoof);
-    this.scene.add(this.objects.houses);
-  }
-
-  generateClouds() {
-    const count = 30;
-    this.objects.clouds = new THREE.Group();
-
-    const geo = new THREE.BoxGeometry(1, 1, 1);
-    const mat = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
-      transparent: true,
-      opacity: 0.8,
+    const leafGeo = new THREE.DodecahedronGeometry(2.5);
+    leafGeo.translate(0, 3.5, 0);
+    const leafMat = new THREE.MeshStandardMaterial({
+      color: 0x3a7a3a,
+      flatShading: true,
     });
 
-    for (let i = 0; i < count; i++) {
-      const cloud = new THREE.Group();
-      // 뭉게구름 만들기 (박스 뭉치기)
-      for (let j = 0; j < 5 + Math.random() * 5; j++) {
-        const bit = new THREE.Mesh(geo, mat);
-        bit.position.set(
-          (Math.random() - 0.5) * 10,
-          (Math.random() - 0.5) * 2,
-          (Math.random() - 0.5) * 5
-        );
-        bit.scale.set(
-          4 + Math.random() * 4,
-          2 + Math.random() * 2,
-          4 + Math.random() * 4
-        );
-        cloud.add(bit);
+    const meshTrunk = new THREE.InstancedMesh(trunkGeo, trunkMat, treeCount);
+    const meshLeaf = new THREE.InstancedMesh(leafGeo, leafMat, treeCount);
+    meshTrunk.castShadow = true;
+    meshTrunk.receiveShadow = true;
+    meshLeaf.castShadow = true;
+    meshLeaf.receiveShadow = true;
+
+    // --- 집 (굴뚝 포함) ---
+    const houseCount = this.config.houseCount;
+    const houseBodyGeo = new THREE.BoxGeometry(5, 4, 5);
+    houseBodyGeo.translate(0, 2, 0);
+    const houseRoofGeo = new THREE.ConeGeometry(4, 3, 4);
+    houseRoofGeo.translate(0, 5.5, 0);
+    houseRoofGeo.rotateY(Math.PI / 4);
+
+    const matBody = new THREE.MeshStandardMaterial({ color: 0xf2e6d8 });
+    const matRoof = new THREE.MeshStandardMaterial({ color: 0xcc5533 });
+
+    const meshHouse = new THREE.InstancedMesh(
+      houseBodyGeo,
+      matBody,
+      houseCount
+    );
+    const meshRoof = new THREE.InstancedMesh(houseRoofGeo, matRoof, houseCount);
+    meshHouse.castShadow = true;
+    meshHouse.receiveShadow = true;
+    meshRoof.castShadow = true;
+    meshRoof.receiveShadow = true;
+
+    // 배치 로직
+    const dummy = new THREE.Object3D();
+    const positions = this.terrainGeo.attributes.position;
+    let tIdx = 0,
+      hIdx = 0;
+
+    for (let i = 0; i < 5000; i++) {
+      // 시도 횟수 넉넉히
+      const x = (Math.random() - 0.5) * this.config.worldSize * 0.8;
+      const z = (Math.random() - 0.5) * this.config.worldSize * 0.8;
+
+      // 높이 찾기 (근사치 말고 정확히 계산하거나 Raycaster 써야하지만, 여기선 노이즈 재계산)
+      let y = this.getElevation(x, z);
+
+      // 나무 배치 (해변~산)
+      if (tIdx < treeCount && y > 3 && y < 45) {
+        // 물가는 야자수 느낌으로 스케일 조정 가능하나 일단 통일
+        dummy.position.set(x, y, z);
+        const s = 0.5 + Math.random();
+        dummy.scale.set(s, s * 1.2, s);
+        dummy.rotation.y = Math.random() * Math.PI;
+        dummy.updateMatrix();
+
+        meshTrunk.setMatrixAt(tIdx, dummy.matrix);
+        meshLeaf.setMatrixAt(tIdx, dummy.matrix);
+
+        // 잎 색상 변형 (가을 느낌 살짝 섞기)
+        const colorVar = new THREE.Color(0x3a7a3a);
+        if (Math.random() < 0.1) colorVar.setHex(0xcc8833); // 단풍
+        meshLeaf.setColorAt(tIdx, colorVar);
+
+        tIdx++;
       }
-      cloud.position.set(
-        (Math.random() - 0.5) * 400,
-        60 + Math.random() * 30,
-        (Math.random() - 0.5) * 400
-      );
-      this.objects.clouds.add(cloud);
+
+      // 집 배치 (평평한 곳 위주)
+      if (hIdx < houseCount && y > 5 && y < 25) {
+        // 군집화 (클러스터링)
+        if (Math.random() > 0.4) continue; // 40% 확률로만 생성 (듬성듬성 방지용 로직 필요하나 생략)
+
+        dummy.position.set(x, y, z);
+        dummy.scale.set(1, 1, 1);
+        dummy.rotation.y = Math.random() * Math.PI * 2;
+        dummy.updateMatrix();
+
+        meshHouse.setMatrixAt(hIdx, dummy.matrix);
+        meshRoof.setMatrixAt(hIdx, dummy.matrix);
+
+        // 굴뚝 연기 위치 저장
+        this.particles.push({
+          pos: new THREE.Vector3(x, y + 6, z),
+          timer: Math.random() * 100,
+        });
+
+        hIdx++;
+      }
     }
-    this.scene.add(this.objects.clouds);
+
+    this.objects.group.add(meshTrunk);
+    this.objects.group.add(meshLeaf);
+    this.objects.group.add(meshHouse);
+    this.objects.group.add(meshRoof);
   }
 
-  // --- 기능 컨트롤 ---
-  toggleTime() {
-    this.isNight = !this.isNight;
-    const timeDisplay = document.getElementById("time-display");
+  getElevation(x, z) {
+    // 생성 시 사용한 노이즈 함수와 동일해야 함
+    let y = this.simplex.noise2D(x * 0.004, z * 0.004) * 40;
+    y += this.simplex.noise2D(x * 0.01, z * 0.01) * 10;
+    y += this.simplex.noise2D(x * 0.03, z * 0.03) * 2;
+    const dist = Math.sqrt(x * x + z * z);
+    const falloff = Math.max(
+      0,
+      1 - Math.pow(dist / (this.config.worldSize * 0.45), 3)
+    );
+    y *= falloff;
+    return y - 5;
+  }
 
-    if (this.isNight) {
-      // 밤 모드
-      this.scene.background = new THREE.Color(0x050510);
+  // 굴뚝 연기 (단순 Mesh 재활용)
+  createSmokeParticles() {
+    const geo = new THREE.DodecahedronGeometry(0.5);
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xdddddd,
+      transparent: true,
+      opacity: 0.6,
+    });
+    this.smokeMesh = new THREE.InstancedMesh(
+      geo,
+      mat,
+      this.particles.length * 5
+    ); // 집마다 5개 파티클
+    this.objects.group.add(this.smokeMesh);
+  }
+
+  updateSmoke() {
+    if (!this.smokeMesh) return;
+    const dummy = new THREE.Object3D();
+    let idx = 0;
+
+    this.particles.forEach((p) => {
+      // 각 집마다 연기 뭉게뭉게
+      const time = this.uniforms.uTime.value * 2;
+      for (let i = 0; i < 5; i++) {
+        const offset = (p.timer + i * 20 + time) % 100; // 0~100 사이클
+        const normLife = offset / 100; // 0 -> 1 (수명)
+
+        if (normLife < 1) {
+          // 위로 올라갈수록 퍼짐
+          const py = p.pos.y + normLife * 8;
+          const px = p.pos.x + Math.sin(time * 0.5 + i) * normLife * 2;
+          const pz = p.pos.z + Math.cos(time * 0.3 + i) * normLife * 2;
+
+          dummy.position.set(px, py, pz);
+          const s = 1 + normLife * 3;
+          dummy.scale.set(s, s, s);
+          dummy.rotation.x = time + i;
+          dummy.updateMatrix();
+          this.smokeMesh.setMatrixAt(idx++, dummy.matrix);
+        }
+      }
+    });
+    this.smokeMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  updateDayNightCycle() {
+    // 0 ~ 2PI 사이 회전
+    this.dayTime += 0.005;
+
+    const sunX = Math.cos(this.dayTime) * 150;
+    const sunY = Math.sin(this.dayTime) * 150;
+    this.sunLight.position.set(sunX, sunY, 50);
+
+    // 하늘색과 조명 강도 조절
+    const sunHeight = Math.sin(this.dayTime);
+    const isNight = sunHeight < 0;
+
+    // UI 시간 표시
+    const hours = Math.floor(((this.dayTime / (Math.PI * 2)) * 24 + 6) % 24);
+    const mins = Math.floor((this.dayTime % 0.1) * 600);
+    document.getElementById("time-val").innerText = `${hours}:${
+      mins < 10 ? "0" + mins : mins
+    }`;
+
+    if (isNight) {
+      this.sunLight.intensity = 0;
+      this.ambientLight.intensity = 0.1;
+      this.scene.background.setHex(0x050510);
       this.scene.fog.color.setHex(0x050510);
-      this.scene.fog.density = 0.005;
-
-      this.lights.sun.intensity = 0.1;
-      this.lights.hemi.groundColor.setHex(0x000000);
-      this.lights.hemi.skyColor.setHex(0x111122);
-
-      timeDisplay.innerText = "Night";
+      // 블룸 효과가 밤에 집 창문(구현한다면)이나 반사를 빛나게 함
     } else {
-      // 낮 모드
-      this.scene.background = new THREE.Color(0x88ccff);
-      this.scene.fog.color.setHex(0x88ccff);
-      this.scene.fog.density = 0.002;
+      // 낮 (노을 구현)
+      this.sunLight.intensity = 1.5;
+      this.ambientLight.intensity = 0.5;
 
-      this.lights.sun.intensity = 1.2;
-      this.lights.hemi.groundColor.setHex(0x444444);
-      this.lights.hemi.skyColor.setHex(0xffffff);
-
-      timeDisplay.innerText = "Day";
+      if (sunHeight < 0.3) {
+        // 노을
+        this.scene.background.setHex(0xffaa55);
+        this.scene.fog.color.setHex(0xffaa55);
+        this.sunLight.color.setHex(0xff8800);
+      } else {
+        // 한낮
+        this.scene.background.setHex(0x88ccff);
+        this.scene.fog.color.setHex(0x88ccff);
+        this.sunLight.color.setHex(0xffaa33);
+      }
     }
+  }
+
+  toggleRotation() {
+    this.autoRotate = !this.autoRotate;
   }
 
   regenerate() {
-    this.config.seed = Math.random() * 10000;
-    this.simplex = new SimplexNoise(this.config.seed.toString());
+    this.simplex = new SimplexNoise(Math.random().toString());
     this.generateWorld();
   }
 
@@ -436,28 +518,27 @@ class VillageWorld {
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.composer.setSize(window.innerWidth, window.innerHeight);
   }
 
   update() {
     requestAnimationFrame(() => this.update());
 
-    this.time += 0.005;
+    const delta = this.clock.getDelta();
+    this.uniforms.uTime.value += delta;
 
-    // 구름 이동
-    if (this.objects.clouds) {
-      this.objects.clouds.children.forEach((cloud) => {
-        cloud.position.x += 0.05;
-        if (cloud.position.x > 300) cloud.position.x = -300;
-      });
+    this.updateDayNightCycle();
+    this.updateSmoke();
+
+    if (this.autoRotate) {
+      this.scene.rotation.y += 0.001;
     }
 
-    // 물결 움직임 (텍스처 오프셋 대신 간단한 상하 이동으로 대체)
-    // 쉐이더 없이 구현하기 위해 생략하거나 간단히 구현
-
     this.controls.update();
-    this.renderer.render(this.scene, this.camera);
+
+    // 렌더러 대신 컴포저 사용 (포스트 프로세싱 적용)
+    this.composer.render();
   }
 }
 
-// 앱 실행
-const worldApp = new VillageWorld();
+const worldApp = new UltraWorld();
