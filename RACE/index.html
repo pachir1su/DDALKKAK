@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NEON RUSH: INFINITE</title>
+    <!-- 같은 폴더의 css 파일 로드 -->
+    <link rel="stylesheet" href="style.css" />
+    <!-- Three.js CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  </head>
+  <body>
+    <!-- 게임 UI 오버레이 -->
+    <div id="ui-layer">
+      <div class="hud">
+        <div class="hud-item">SCORE: <span id="score">0</span></div>
+        <div class="hud-item">SPEED: <span id="speed">0</span> KM/H</div>
+      </div>
+
+      <!-- 시작 화면 -->
+      <div id="start-screen" class="screen">
+        <h1 class="glitch-text" data-text="NEON RUSH">NEON RUSH</h1>
+        <p class="subtitle">CYBERPUNK INFINITE RUNNER</p>
+        <p class="controls">MOUSE LEFT/RIGHT to STEER</p>
+        <button onclick="game.start()">INITIALIZE LINK</button>
+      </div>
+
+      <!-- 게임 오버 화면 -->
+      <div id="game-over-screen" class="screen" style="display: none">
+        <h1 class="danger-text">CRASHED</h1>
+        <p>DISTANCE: <span id="final-score">0</span> M</p>
+        <button onclick="game.start()">REBOOT SYSTEM</button>
+      </div>
+    </div>
+
+    <!-- 같은 폴더의 js 파일 로드 -->
+    <script src="game.js"></script>
+  </body>
+</html>
