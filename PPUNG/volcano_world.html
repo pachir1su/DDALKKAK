@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>THE VOLCANIC WORLD</title>
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden;
+        background-color: #0b1026;
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      }
+
+      /* UI 디자인 업그레이드 */
+      #ui-container {
+        position: absolute;
+        bottom: 30px;
+        left: 50%;
+        transform: translateX(-50%);
+        text-align: center;
+        pointer-events: none;
+        z-index: 10;
+        width: 80%;
+      }
+
+      h1 {
+        color: #ffcc00;
+        font-size: 40px;
+        margin: 0;
+        text-shadow: 0 0 20px rgba(255, 100, 0, 0.8);
+        letter-spacing: 5px;
+        font-weight: 900;
+        text-transform: uppercase;
+      }
+
+      .status-bar {
+        margin-top: 10px;
+        background: rgba(0, 0, 0, 0.5);
+        padding: 10px 20px;
+        border-radius: 30px;
+        display: inline-block;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        backdrop-filter: blur(5px);
+      }
+
+      p {
+        color: #aaddff;
+        font-size: 14px;
+        margin: 0;
+        font-weight: bold;
+      }
+
+      .key-hint {
+        color: #ff4422;
+        background: white;
+        padding: 2px 8px;
+        border-radius: 4px;
+        margin: 0 5px;
+        font-size: 12px;
+        font-weight: 900;
+      }
+
+      #loading {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: #000;
+        color: white;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 999;
+        font-size: 24px;
+        transition: opacity 1s;
+      }
+    </style>
+
+    <!-- Three.js 및 유틸리티 로드 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <!-- 지형 노이즈 생성을 위한 간단한 구현체 -->
+    <script src="https://cdn.jsdelivr.net/npm/simplex-noise@2.4.0/simplex-noise.min.js"></script>
+  </head>
+  <body>
+    <div id="loading">지형 생성 중... 세계를 구축하고 있습니다.</div>
+
+    <div id="ui-container">
+      <h1>Volcanic World</h1>
+      <div class="status-bar">
+        <p>
+          <span class="key-hint">CLICK</span> 또는
+          <span class="key-hint">SPACE</span> : 대폭발 일으키기
+        </p>
+        <p style="font-size: 11px; color: #666; margin-top: 5px">
+          마우스 드래그로 세계를 탐험하세요
+        </p>
+      </div>
+    </div>
+
+    <script>
+      /**
+       * ==========================================================================================
+       *  VOLCANIC WORLD ENGINE
+       *
+       *  이 코드는 절차적 지형 생성, 물리 기반 파티클,
+       *  커스텀 쉐이더(물 효과), 인스턴싱(식생)을 포함합니다.
+       * ==========================================================================================
+       */
+
+      // --- 1. 설정 및 전역 변수 ---
+      const CONFIG = {
+        worldSize: 400,
+        chunkRes: 80, // 지형 해상도
+        seaLevel: 5,
+        volcanoHeight: 45,
+        gravity: 0.6,
+        colors: {
+          sky: 0x0b1026,
+          water: 0x0066aa,
+          lava: 0xff3300,
+          rock: 0x333333,
+          grass: 0x2d5a27,
+          sand: 0xeebb88,
+        },
+      };
+
+      let scene, camera, renderer, controls;
+      let waterMesh, islandMesh;
+      const simplex = new SimplexNoise(); // 노이즈 생성기
+      const particles = [];
+      const shockwaves = [];
+      let time = 0;
+      let shakeIntensity = 0;
+
+      // 조명 참조용
+      let magmaLight;
+
+      // 텍스처 생성기 (이미지 파일 의존성 제거)
+      function createTexture(type) {
+        const cvs = document.createElement("canvas");
+        cvs.width = 64;
+        cvs.height = 64;
+        const ctx = cvs.getContext("2d");
+
+        if (type === "glow") {
+          const grd = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+          grd.addColorStop(0, "rgba(255,255,255,1)");
+          grd.addColorStop(0.2, "rgba(255,200,50,0.8)");
+          grd.addColorStop(1, "rgba(0,0,0,0)");
+          ctx.fillStyle = grd;
+          ctx.fillRect(0, 0, 64, 64);
+        } else if (type === "smoke") {
+          const grd = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+          grd.addColorStop(0, "rgba(200,200,200,0.5)");
+          grd.addColorStop(1, "rgba(0,0,0,0)");
+          ctx.fillStyle = grd;
+          ctx.fillRect(0, 0, 64, 64);
+        }
+        return new THREE.CanvasTexture(cvs);
+      }
+
+      const texGlow = createTexture("glow");
+      const texSmoke = createTexture("smoke");
+
+      // --- 2. 초기화 및 월드 생성 ---
+      function init() {
+        // 씬 설정
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(CONFIG.colors.sky);
+        scene.fog = new THREE.FogExp2(CONFIG.colors.sky, 0.012);
+
+        // 카메라
+        camera = new THREE.PerspectiveCamera(
+          55,
+          window.innerWidth / window.innerHeight,
+          1,
+          1000
+        );
+        camera.position.set(80, 60, 120);
+
+        // 렌더러
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        document.body.appendChild(renderer.domElement);
+
+        // 컨트롤
+        controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.maxPolarAngle = Math.PI / 2 - 0.1; // 땅 밑으로 못 가게
+        controls.minDistance = 20;
+        controls.maxDistance = 250;
+        controls.autoRotate = true;
+        controls.autoRotateSpeed = 0.3;
+
+        // 조명 시스템
+        setupLighting();
+
+        // 월드 구성 요소 생성
+        createOcean();
+        createIsland();
+        createStars();
+
+        // 로딩 화면 제거
+        document.getElementById("loading").style.opacity = 0;
+        setTimeout(() => {
+          document.getElementById("loading").style.display = "none";
+        }, 1000);
+
+        // 이벤트 리스너
+        window.addEventListener("resize", onWindowResize, false);
+        window.addEventListener("pointerdown", triggerExplosion);
+        window.addEventListener("keydown", (e) => {
+          if (e.code === "Space") triggerExplosion();
+        });
+
+        // 애니메이션 시작
+        animate();
+      }
+
+      function setupLighting() {
+        // 환경광 (은은한 밤 느낌)
+        const ambient = new THREE.AmbientLight(0x333344, 0.6);
+        scene.add(ambient);
+
+        // 반사광 (하늘색과 지면색의 조화)
+        const hemi = new THREE.HemisphereLight(0x444488, 0x222222, 0.4);
+        scene.add(hemi);
+
+        // 달빛 (그림자 생성)
+        const moon = new THREE.DirectionalLight(0xaaccff, 0.8);
+        moon.position.set(100, 100, -50);
+        moon.castShadow = true;
+        moon.shadow.mapSize.width = 2048;
+        moon.shadow.mapSize.height = 2048;
+        moon.shadow.camera.near = 0.5;
+        moon.shadow.camera.far = 500;
+        moon.shadow.camera.left = -100;
+        moon.shadow.camera.right = 100;
+        moon.shadow.camera.top = 100;
+        moon.shadow.camera.bottom = -100;
+        scene.add(moon);
+
+        // 마그마 빛 (화산 내부)
+        magmaLight = new THREE.PointLight(0xff5500, 2, 100);
+        magmaLight.position.set(0, CONFIG.volcanoHeight - 5, 0);
+        scene.add(magmaLight);
+      }
+
+      // --- 3. 지형 생성 시스템 (절차적 생성) ---
+      function createIsland() {
+        // Plane Geometry를 변형하여 산 만들기
+        const geometry = new THREE.PlaneGeometry(200, 200, 128, 128);
+        geometry.rotateX(-Math.PI / 2);
+
+        const pos = geometry.attributes.position;
+        const colors = [];
+        const colorBase = new THREE.Color();
+
+        // 식생 배치를 위한 데이터
+        const trees = [];
+
+        for (let i = 0; i < pos.count; i++) {
+          const x = pos.getX(i);
+          const z = pos.getZ(i);
+
+          // 중심으로부터의 거리
+          const dist = Math.sqrt(x * x + z * z);
+          const maxRadius = 80;
+
+          // 기본 화산 형태 (지수 함수 이용)
+          let height = 0;
+
+          if (dist < maxRadius) {
+            // 화산의 원뿔 형태: 중심에 가까울수록 높게
+            // Perlin Noise를 더해 울퉁불퉁하게
+            const noise = simplex.noise2D(x * 0.05, z * 0.05) * 3;
+            const bigNoise = simplex.noise2D(x * 0.01, z * 0.01) * 10;
+
+            // 거리에 따른 높이 감쇠
+            let volcanoShape =
+              (1 - Math.pow(dist / maxRadius, 1.5)) * CONFIG.volcanoHeight;
+
+            // 분화구 만들기 (중심부 함몰)
+            if (dist < 8) {
+              volcanoShape = Math.max(0, dist - 2) * 2;
+            }
+
+            height = volcanoShape + noise + bigNoise;
+          } else {
+            // 바다 밑바닥
+            height = -10 + simplex.noise2D(x * 0.05, z * 0.05) * 2;
+          }
+
+          // 위치 적용
+          pos.setY(i, Math.max(-20, height));
+
+          // --- 지형 채색 (Vertex Colors) ---
+          // 높이와 노이즈에 따라 색상 결정
+          if (height > 35) {
+            // 꼭대기 (검붉은 바위 + 눈/재)
+            colorBase.setHex(CONFIG.colors.rock);
+            if (height > 40) colorBase.lerp(new THREE.Color(0x552200), 0.5); // 분화구 근처 붉음
+          } else if (height > 15) {
+            // 산 중턱 (바위)
+            colorBase.setHex(CONFIG.colors.rock);
+            // 랜덤하게 죽은 나무 배치
+            if (Math.random() < 0.02)
+              trees.push({ x, y: height, z, type: "dead" });
+          } else if (height > 7) {
+            // 숲 (초록)
+            colorBase.setHex(CONFIG.colors.grass);
+            // 랜덤하게 산 나무 배치
+            if (Math.random() < 0.03)
+              trees.push({ x, y: height, z, type: "live" });
+          } else if (height > 2) {
+            // 해변 (모래)
+            colorBase.setHex(CONFIG.colors.sand);
+            if (Math.random() < 0.01 && height > 4)
+              trees.push({ x, y: height, z, type: "palm" });
+          } else {
+            // 물 밑 (어두운 모래)
+            colorBase.setHex(0x333333);
+          }
+
+          colors.push(colorBase.r, colorBase.g, colorBase.b);
+        }
+
+        geometry.setAttribute(
+          "color",
+          new THREE.Float32BufferAttribute(colors, 3)
+        );
+        geometry.computeVertexNormals();
+
+        const material = new THREE.MeshStandardMaterial({
+          vertexColors: true,
+          roughness: 0.9,
+          flatShading: true, // 로우 폴리 느낌
+        });
+
+        islandMesh = new THREE.Mesh(geometry, material);
+        islandMesh.receiveShadow = true;
+        islandMesh.castShadow = true;
+        scene.add(islandMesh);
+
+        // 식생 배치 함수 호출
+        placeVegetation(trees);
+      }
+
+      function createOcean() {
+        // 움직이는 바다 (간단한 투명 평면)
+        const geo = new THREE.PlaneGeometry(1000, 1000, 50, 50);
+        geo.rotateX(-Math.PI / 2);
+
+        const mat = new THREE.MeshStandardMaterial({
+          color: CONFIG.colors.water,
+          transparent: true,
+          opacity: 0.7,
+          roughness: 0.1,
+          metalness: 0.8,
+          flatShading: true,
+        });
+
+        waterMesh = new THREE.Mesh(geo, mat);
+        waterMesh.position.y = CONFIG.seaLevel;
+        scene.add(waterMesh);
+      }
+
+      function createStars() {
+        const geo = new THREE.BufferGeometry();
+        const count = 3000;
+        const pos = new Float32Array(count * 3);
+        for (let i = 0; i < count * 3; i++) {
+          pos[i] = (Math.random() - 0.5) * 800;
+          // 하늘 위에만 별이 있도록 y값 조정 (절반은 위로)
+          if (i % 3 === 1 && pos[i] < 0) pos[i] *= -1;
+        }
+        geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+        const mat = new THREE.PointsMaterial({
+          color: 0xffffff,
+          size: 0.8,
+          transparent: true,
+          opacity: 0.8,
+        });
+        scene.add(new THREE.Points(geo, mat));
+      }
+
+      // --- 4. 식생 시스템 (Vegetation) ---
+      function placeVegetation(treeData) {
+        const treeGroup = new THREE.Group();
+
+        // 지오메트리 미리 생성 (성능 최적화)
+        const trunkGeo = new THREE.CylinderGeometry(0.2, 0.4, 1.5, 5);
+        const deadMat = new THREE.MeshStandardMaterial({ color: 0x332211 });
+        const liveMat = new THREE.MeshStandardMaterial({ color: 0x554433 });
+
+        const leavesGeo = new THREE.ConeGeometry(1.2, 3, 5);
+        const leavesMat = new THREE.MeshStandardMaterial({ color: 0x2d5a27 });
+
+        const palmLeavesGeo = new THREE.ConeGeometry(1.5, 1, 6);
+        const palmMat = new THREE.MeshStandardMaterial({ color: 0x668822 });
+
+        treeData.forEach((data) => {
+          const tree = new THREE.Group();
+          tree.position.set(data.x, data.y, data.z);
+
+          // 랜덤 회전 및 크기
+          const scale = 0.8 + Math.random() * 0.4;
+          tree.scale.set(scale, scale, scale);
+          tree.rotation.y = Math.random() * Math.PI * 2;
+
+          if (data.type === "dead") {
+            // 죽은 나무 (기둥만 있거나 가지가 앙상함)
+            const trunk = new THREE.Mesh(trunkGeo, deadMat);
+            trunk.position.y = 0.75;
+            // 기울어짐
+            trunk.rotation.z = (Math.random() - 0.5) * 0.5;
+            trunk.rotation.x = (Math.random() - 0.5) * 0.5;
+            tree.add(trunk);
+          } else if (data.type === "live") {
+            // 침엽수
+            const trunk = new THREE.Mesh(trunkGeo, liveMat);
+            trunk.position.y = 0.75;
+
+            const leaves = new THREE.Mesh(leavesGeo, leavesMat);
+            leaves.position.y = 2.5;
+
+            tree.add(trunk);
+            tree.add(leaves);
+          } else if (data.type === "palm") {
+            // 야자수 느낌 (기둥 길게, 잎 납작하게)
+            const trunk = new THREE.Mesh(
+              new THREE.CylinderGeometry(0.15, 0.2, 2.5, 5),
+              liveMat
+            );
+            trunk.position.y = 1.25;
+            // 야자수는 약간 휨
+            trunk.rotation.z = 0.2;
+
+            const leaves = new THREE.Mesh(palmLeavesGeo, palmMat);
+            leaves.position.set(0.4, 2.5, 0);
+            leaves.rotation.z = -0.2;
+
+            tree.add(trunk);
+            tree.add(leaves);
+          }
+
+          tree.castShadow = true;
+          tree.receiveShadow = true;
+          treeGroup.add(tree);
+        });
+
+        scene.add(treeGroup);
+      }
+
+      // --- 5. 파티클 및 물리 시스템 ---
+
+      class Particle {
+        constructor(type) {
+          this.type = type; // 'lava', 'smoke', 'spark'
+          this.active = true;
+
+          // 재질 및 지오메트리 설정
+          let material;
+          if (type === "smoke") {
+            material = new THREE.SpriteMaterial({
+              map: texSmoke,
+              color: 0x555555,
+              transparent: true,
+              opacity: 0.5,
+              blending: THREE.NormalBlending,
+              depthWrite: false,
+            });
+            this.mesh = new THREE.Sprite(material);
+            const s = 4 + Math.random() * 4;
+            this.mesh.scale.set(s, s, 1);
+          } else {
+            // 용암/불꽃 (빛나는 효과)
+            material = new THREE.SpriteMaterial({
+              map: texGlow,
+              color: type === "lava" ? 0xffaa00 : 0xffffaa,
+              transparent: true,
+              opacity: 1,
+              blending: THREE.AdditiveBlending,
+              depthWrite: false,
+            });
+            this.mesh = new THREE.Sprite(material);
+            const s = type === "lava" ? 2.5 : 0.8;
+            this.mesh.scale.set(s, s, 1);
+          }
+
+          // 초기 위치: 분화구 안쪽
+          const angle = Math.random() * Math.PI * 2;
+          const r = Math.random() * 3;
+          this.mesh.position.set(
+            Math.cos(angle) * r,
+            CONFIG.volcanoHeight - 2,
+            Math.sin(angle) * r
+          );
+
+          // 초기 속도 (폭발력)
+          const force = Math.random();
+          if (type === "lava") {
+            this.velocity = new THREE.Vector3(
+              (Math.random() - 0.5) * 20,
+              Math.random() * 30 + 20, // 위로 솟구침
+              (Math.random() - 0.5) * 20
+            );
+            this.mass = 1;
+          } else if (type === "smoke") {
+            this.velocity = new THREE.Vector3(
+              (Math.random() - 0.5) * 10,
+              Math.random() * 15 + 5,
+              (Math.random() - 0.5) * 10
+            );
+            this.mass = 0.1;
+          } else {
+            this.velocity = new THREE.Vector3(
+              (Math.random() - 0.5) * 50,
+              Math.random() * 50 + 10,
+              (Math.random() - 0.5) * 50
+            );
+            this.mass = 0.5;
+          }
+
+          scene.add(this.mesh);
+          this.life = 1.0;
+        }
+
+        update(dt) {
+          if (!this.active) return;
+
+          this.life -= dt * (this.type === "spark" ? 1.5 : 0.4);
+
+          // 물리 이동
+          this.mesh.position.x += this.velocity.x * dt;
+          this.mesh.position.y += this.velocity.y * dt;
+          this.mesh.position.z += this.velocity.z * dt;
+
+          // 중력 적용
+          if (this.type !== "smoke") {
+            this.velocity.y -= CONFIG.gravity;
+          } else {
+            this.velocity.y *= 0.98; // 연기는 느려짐
+          }
+
+          // 시각적 변화
+          if (this.type === "smoke") {
+            this.mesh.scale.multiplyScalar(1.01); // 커짐
+            this.mesh.material.opacity = this.life * 0.4;
+          } else if (this.type === "lava") {
+            this.mesh.scale.multiplyScalar(0.99);
+            // 식으면서 빨갛게 -> 검게
+            if (this.life < 0.5) this.mesh.material.color.setHex(0xff0000);
+          }
+
+          // 지형 충돌 감지 (간단한 높이 맵 검사)
+          if (this.type === "lava") {
+            this.checkGroundCollision();
+          }
+
+          // 수명 종료
+          if (this.life <= 0 || this.mesh.position.y < -10) {
+            this.dispose();
+          }
+        }
+
+        checkGroundCollision() {
+          // 현재 x, z 위치에서의 지형 높이를 근사치로 계산 (역으로)
+          // 정확한 충돌은 Mesh Raycasting이 필요하지만 성능상 거리 기반으로 근사
+          const dist = Math.sqrt(
+            this.mesh.position.x ** 2 + this.mesh.position.z ** 2
+          );
+
+          // 대략적인 화산 경사면 계산
+          let groundH = -10;
+          if (dist < 80) {
+            groundH = (1 - Math.pow(dist / 80, 1.5)) * CONFIG.volcanoHeight;
+            // 노이즈 오차범위 보정 (-2)
+            groundH -= 2;
+          }
+
+          // 충돌 발생 (물체가 지형보다 아래에 있음)
+          if (this.mesh.position.y < groundH) {
+            this.mesh.position.y = groundH;
+
+            // 튀어오름 (Bounce)
+            this.velocity.y *= -0.5;
+            this.velocity.x *= 0.7; // 마찰
+            this.velocity.z *= 0.7;
+
+            // 너무 느려지면 멈춤 (슬라이딩 효과 대신 삭제)
+            if (
+              Math.abs(this.velocity.y) < 1 &&
+              Math.abs(this.velocity.x) < 1
+            ) {
+              this.life -= 0.1; // 빨리 사라짐
+            }
+          }
+        }
+
+        dispose() {
+          this.active = false;
+          scene.remove(this.mesh);
+          this.mesh.material.dispose();
+        }
+      }
+
+      // 충격파 효과
+      class Shockwave {
+        constructor() {
+          const geometry = new THREE.RingGeometry(1, 5, 32);
+          geometry.rotateX(-Math.PI / 2);
+          const material = new THREE.MeshBasicMaterial({
+            color: 0xffaa66,
+            transparent: true,
+            opacity: 0.6,
+            side: THREE.DoubleSide,
+            blending: THREE.AdditiveBlending,
+          });
+          this.mesh = new THREE.Mesh(geometry, material);
+          this.mesh.position.y = CONFIG.volcanoHeight - 2;
+          scene.add(this.mesh);
+          this.scale = 1;
+          this.opacity = 0.6;
+        }
+        update() {
+          this.scale += 2;
+          this.opacity -= 0.02;
+          this.mesh.scale.set(this.scale, this.scale, 1);
+          this.mesh.material.opacity = this.opacity;
+        }
+        isDead() {
+          return this.opacity <= 0;
+        }
+        dispose() {
+          scene.remove(this.mesh);
+          this.mesh.geometry.dispose();
+          this.mesh.material.dispose();
+        }
+      }
+
+      // --- 6. 메인 루프 및 로직 ---
+
+      function triggerExplosion() {
+        shakeIntensity = 2.5;
+        shockwaves.push(new Shockwave());
+
+        // 섬광
+        const oldFog = scene.fog.color.clone();
+        scene.fog.color.setHex(0x552211);
+        setTimeout(() => {
+          scene.fog.color.copy(oldFog);
+        }, 100);
+
+        // 파티클 대량 생성
+        for (let i = 0; i < 40; i++) particles.push(new Particle("lava"));
+        for (let i = 0; i < 20; i++) particles.push(new Particle("smoke"));
+        for (let i = 0; i < 30; i++) particles.push(new Particle("spark"));
+      }
+
+      function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      }
+
+      function animate() {
+        requestAnimationFrame(animate);
+
+        const dt = 0.03; // 고정 델타 타임
+        time += 0.01;
+
+        // 1. 물 애니메이션
+        const positions = waterMesh.geometry.attributes.position;
+        for (let i = 0; i < positions.count; i++) {
+          const x = positions.getX(i);
+          const y = positions.getY(i); // 원본 y는 0이나 평면이라 z처럼 쓰임(rotation 때문)
+          // 파도: 사인파 합성
+          const waveZ =
+            Math.sin(x * 0.1 + time) * 0.5 +
+            Math.cos(y * 0.1 + time * 1.2) * 0.5;
+          positions.setZ(i, waveZ); // Geometry가 회전되어 있어서 Z축을 건드려야 높이가 변함
+        }
+        positions.needsUpdate = true;
+
+        // 2. 화산 내부 조명 (숨쉬기 효과)
+        magmaLight.intensity = 2 + Math.sin(time * 5) * 1 + Math.random();
+
+        // 3. 자동 파티클 (평상시)
+        if (Math.random() < 0.2) particles.push(new Particle("smoke"));
+        if (Math.random() < 0.05) particles.push(new Particle("spark"));
+
+        // 4. 파티클 및 충격파 업데이트
+        for (let i = particles.length - 1; i >= 0; i--) {
+          const p = particles[i];
+          if (p.active) p.update(dt);
+          else particles.splice(i, 1);
+        }
+
+        for (let i = shockwaves.length - 1; i >= 0; i--) {
+          const s = shockwaves[i];
+          s.update();
+          if (s.isDead()) {
+            s.dispose();
+            shockwaves.splice(i, 1);
+          }
+        }
+
+        // 5. 카메라 쉐이크
+        if (shakeIntensity > 0) {
+          camera.position.add(
+            new THREE.Vector3(
+              (Math.random() - 0.5) * shakeIntensity,
+              (Math.random() - 0.5) * shakeIntensity,
+              (Math.random() - 0.5) * shakeIntensity
+            )
+          );
+          shakeIntensity *= 0.9; // 감쇠
+        }
+
+        controls.update();
+        renderer.render(scene, camera);
+      }
+
+      // 시작
+      init();
+    </script>
+  </body>
+</html>
